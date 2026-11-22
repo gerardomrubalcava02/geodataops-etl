@@ -29,7 +29,7 @@ _UPSERT_MUNICIPALITY = """
         (dataset, cvegeo, name, geometry, last_run_id)
     VALUES (
         %s, %s, %s,
-        public.ST_Multi(public.ST_SetSRID(public.ST_GeomFromGeoJSON(%s), 4326)),
+        public.ST_Multi(public.ST_Transform(public.ST_GeomFromGeoJSON(%s), 4326)),
         %s
     )
     ON CONFLICT (dataset, cvegeo) DO UPDATE SET
@@ -66,7 +66,7 @@ _POPULATION_CONFLICT = """
     FROM affected
     JOIN staging.indicators AS i USING (dataset, cvegeo, periodo)
     WHERE i.indicador IN ('poblacion_total', 'poblacion_femenina', 'poblacion_masculina')
-    GROUP BY i.cvegeo, i.periodo, i.fuente
+    GROUP BY i.cvegeo, i.periodo
     HAVING count(*) = 3
        AND max(i.valor) FILTER (WHERE i.indicador = 'poblacion_total')
            <> sum(i.valor) FILTER (WHERE i.indicador <> 'poblacion_total')
