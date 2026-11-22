@@ -1,0 +1,48 @@
+name: geodataops-etl
+
+x-database: &database
+  PGHOST: db
+  PGPORT: '5432'
+  PGDATABASE: geodataops
+  PGUSER: geodataops
+  PGPASSWORD: ${POSTGRES_PASSWORD:-geodataops_local}
+
+services:
+  db:
+    image: postgis/postgis:17-3.7
+    environment:
+      POSTGRES_DB: geodataops
+      POSTGRES_USER: geodataops
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-geodataops_local}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 3s
+      timeout: 3s
+      retries: 15
+      start_period: 10s
+  etl:
+    build:
+      context: .
+      target: runtime
+    environment: *database
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./output:/app/output
+  tests:
+    profiles: [test]
+    build:
+      context: .
+      target: test
+    environment:
+      <<: *database
+      GEODATAOPS_TEST_DSN: 'dbname=postgres'
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "geodataops-etl"
+version = "0.1.0"
+description = "ETL municipal reproducible para PostgreSQL y PostGIS"
+requires-python = ">=3.12"
+dependencies = ["psycopg[binary]==3.2.13"]
+
+[project.optional-dependencies]
+test = ["pytest==8.4.2"]
+
+[project.scripts]
+geodataops = "geodataops.cli:main"
+
+[tool.setuptools.package-data]
+geodataops = ["*.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

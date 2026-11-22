@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+.local/
+.venv/
+.uv-cache/
+.pytest_cache/
+build/
+dist/
+output/*
+!output/municipios_indicadores.csv
