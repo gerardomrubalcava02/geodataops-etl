@@ -1,0 +1,133 @@
+name: GeoDataOps ETL CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install '.[test]'
+      - run: python -m pytest -q -m "not integration"
+
+  integration:
+    name: PostgreSQL/PostGIS integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgis:
+        image: postgis/postgis:17-3.7
+        env:
+          POSTGRES_USER: geodataops
+          POSTGRES_PASSWORD: geodataops_ci
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U geodataops -d postgres"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      GEODATAOPS_REQUIRE_INTEGRATION: '1'
+      GEODATAOPS_TEST_DSN: 'dbname=postgres'
+      PGHOST: 127.0.0.1
+      PGUSER: geodataops
+      PGPASSWORD: geodataops_ci
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install '.[test]'
+      - name: Set the published database port
+        env:
+          PGPORT: ${{ job.services.postgis.ports['5432'] }}
+        run: echo "PGPORT=$PGPORT" >> "$GITHUB_ENV"
+      - name: Prove that missing or unreachable PostGIS fails pytest
+        shell: bash
+        run: |
+          expect_failure() {
+            local message="$1"
+            shift
+            local status=0
+            "$@" > "$RUNNER_TEMP/strict-postgis.log" 2>&1 || status=$?
+            cat "$RUNNER_TEMP/strict-postgis.log"
+            test "$status" -eq 1
+            grep -Fq "$message" "$RUNNER_TEMP/strict-postgis.log"
+          }
+          test_case=tests/test_pipeline.py::test_default_real_load_and_idempotence
+          expect_failure "GEODATAOPS_TEST_DSN is required" \
+            env -u GEODATAOPS_TEST_DSN python -m pytest -q "$test_case"
+          expect_failure "Could not connect to the PostgreSQL integration server" \
+            env GEODATAOPS_TEST_DSN='host=127.0.0.1 port=1 dbname=postgres' \
+            python -m pytest -q "$test_case"
+      - run: python -m pytest -q -m integration
+
+  compose:
+    name: Docker Compose end-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build, load, and replay the checked-in sample
+        shell: bash
+        run: |
+          csv=output/municipios_indicadores.csv
+          mv -- "$csv" "$RUNNER_TEMP/reference.csv"
+          docker compose up -d --wait db
+          docker compose build etl
+          docker compose --ansi never run --rm -T etl run 2>&1 | tee "$RUNNER_TEMP/first-load.log"
+          cmp "$RUNNER_TEMP/reference.csv" "$csv"
+          docker compose run --rm -T etl health | tee "$RUNNER_TEMP/health.json"
+          docker compose run --rm -T etl diagnose --limit 1 | tee "$RUNNER_TEMP/diagnose.json"
+          docker compose exec -T db psql -X -v ON_ERROR_STOP=1 -U geodataops -d geodataops < src/geodataops/queries.sql
+          docker compose --ansi never run --rm -T etl run 2>&1 | tee "$RUNNER_TEMP/replay.log"
+          cmp "$RUNNER_TEMP/reference.csv" "$csv"
+          git diff --exit-code -- "$csv"
+          python3 - "$csv" "$RUNNER_TEMP" <<'PY'
+          import csv
+          import json
+          import sys
+          from hashlib import sha256
+          from pathlib import Path
+
+          published, evidence = map(Path, sys.argv[1:])
+          with published.open(encoding="utf-8", newline="") as stream:
+              rows = list(csv.DictReader(stream))
+          assert len(rows) == 18, f"Expected 18 rows, got {len(rows)}"
+          health = json.loads((evidence / "health.json").read_text())
+          assert health["status"] == "ok", health
+          history = json.loads((evidence / "diagnose.json").read_text())
+          assert len(history) == 1 and history[0]["status"] == "succeeded", history
+
+          for log_name, expected in [("first-load.log", 18), ("replay.log", 0)]:
+              lines = (evidence / log_name).read_text().splitlines()
+              events = [json.loads(line) for line in lines if line.startswith('{"timestamp":')]
+              reports = [event["report"] for event in events if event["event"] == "etl_succeeded"]
+              assert len(reports) == 1, events
+              report = reports[0]
+              assert report["indicators_upserted"] == expected, report
+              assert report["csv_published"] and report["exported_rows"] == 18, report
+
+          print(f"rows={len(rows)} health={health['status']} replay_upserts=0 "
+                f"sha256={sha256(published.read_bytes()).hexdigest()}")
+          PY
+      - name: Show database logs on failure
+        if: failure()
+        run: docker compose logs --no-color db
+      - name: Remove CI containers and volumes
+        if: always()
+        run: docker compose down --volumes --remove-orphans

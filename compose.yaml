@@ -40,6 +40,7 @@ services:
     environment:
       <<: *database
       GEODATAOPS_TEST_DSN: 'dbname=postgres'
+      GEODATAOPS_REQUIRE_INTEGRATION: '1'
     depends_on:
       db:
         condition: service_healthy
