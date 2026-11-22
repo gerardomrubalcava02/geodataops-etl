@@ -38,6 +38,10 @@ class InputError(ValueError):
     """An input cannot be extracted or fails the data contract."""
 
 
+def _is_demo_source(value: object) -> bool:
+    return isinstance(value, str) and value.strip().casefold().startswith("demo sintético")
+
+
 def _text(value: object, field: str, location: str) -> str:
     if not isinstance(value, str) or not value.strip() or "\x00" in value:
         raise InputError(f"{location}: {field} debe contener texto válido")
@@ -191,7 +195,7 @@ def _read_indicators(path: Path, dataset: str) -> tuple[list[dict], list[dict]]:
                 continue
 
             for item in normalized:
-                if dataset != "demo" and item["fuente"] == DEMO_SOURCE:
+                if dataset != "demo" and _is_demo_source(item["fuente"]):
                     raise InputError(f"{location}: la fuente sintética requiere el dataset demo")
                 key = (item["cvegeo"], item["periodo"], item["indicador"])
                 if key in keys:
@@ -312,7 +316,7 @@ def _read_municipalities(data: bytes, source: str, dataset: str) -> tuple[list[d
         properties = feature.get("properties")
         if not isinstance(properties, dict):
             raise InputError(f"{location}: se esperaban propiedades municipales")
-        if dataset != "demo" and properties.get("source") == DEMO_SOURCE:
+        if dataset != "demo" and _is_demo_source(properties.get("source")):
             raise InputError(f"{location}: la geometría sintética requiere el dataset demo")
         code = _municipal_code(properties.get("cvegeo"), location)
         if code in codes:

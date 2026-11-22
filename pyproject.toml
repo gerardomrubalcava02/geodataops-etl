@@ -20,3 +20,4 @@ geodataops = ["*.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["integration: requiere PostgreSQL con PostGIS y una cuenta de pruebas con CREATEDB"]
