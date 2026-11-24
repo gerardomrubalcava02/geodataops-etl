@@ -164,10 +164,10 @@ def _validate_population(rows: list[dict]) -> None:
     population = {}
     for row in rows:
         if row["indicador"] in ITER_POPULATION.values():
-            key = (row["cvegeo"], row["periodo"], row["fuente"])
+            key = (row["cvegeo"], row["periodo"])
             population.setdefault(key, {})[row["indicador"]] = int(row["valor"])
 
-    for (code, period, _source), values in population.items():
+    for (code, period), values in population.items():
         if len(values) == len(ITER_POPULATION) and values["poblacion_total"] != (
             values["poblacion_femenina"] + values["poblacion_masculina"]
         ):
@@ -255,7 +255,7 @@ def _validate_position(position: object, location: str) -> None:
         raise InputError(f"{location}: las coordenadas deben ser numéricas")
     longitude, latitude = position
     if not (-180 <= longitude <= 180 and -90 <= latitude <= 90):
-        raise InputError(f"{location}: coordenadas fuera del rango WGS84")
+        raise InputError(f"{location}: coordenadas fuera del rango de longitud y latitud")
 
 
 def _geometry(geometry: object, location: str) -> dict:
@@ -273,7 +273,19 @@ def _geometry(geometry: object, location: str) -> dict:
                 raise InputError(f"{location}: el anillo debe estar cerrado y tener al menos cuatro posiciones")
             for position in ring:
                 _validate_position(position, location)
-    return {"type": geometry["type"], "coordinates": coordinates}
+    normalized = {"type": geometry["type"], "coordinates": coordinates}
+    if "crs" in geometry:
+        crs = geometry["crs"]
+        properties = crs.get("properties") if isinstance(crs, dict) else None
+        name = properties.get("name") if isinstance(properties, dict) else None
+        if (
+            not isinstance(crs, dict)
+            or crs.get("type") != "name"
+            or name not in ("EPSG:4326", "EPSG:6365")
+        ):
+            raise InputError(f"{location}: el CRS declarado debe indicar EPSG:4326 o EPSG:6365")
+        normalized["crs"] = {"type": "name", "properties": {"name": name}}
+    return normalized
 
 
 def _json_float(value: str) -> float:
@@ -304,6 +316,8 @@ def _read_municipalities(data: bytes, source: str, dataset: str) -> tuple[list[d
 
     if not isinstance(document, dict) or document.get("type") != "FeatureCollection":
         raise InputError(f"{source}: se esperaba una FeatureCollection GeoJSON")
+    if "crs" in document:
+        raise InputError(f"{source}: el CRS solo se admite dentro de cada geometría")
     features = document.get("features")
     if not isinstance(features, list) or not features:
         raise InputError(f"{source}: la FeatureCollection no contiene municipios")
@@ -313,6 +327,8 @@ def _read_municipalities(data: bytes, source: str, dataset: str) -> tuple[list[d
         location = f"{source} feature {index}"
         if not isinstance(feature, dict) or feature.get("type") != "Feature":
             raise InputError(f"{location}: se esperaba un objeto Feature")
+        if "crs" in feature:
+            raise InputError(f"{location}: el CRS solo se admite dentro de cada geometría")
         properties = feature.get("properties")
         if not isinstance(properties, dict):
             raise InputError(f"{location}: se esperaban propiedades municipales")

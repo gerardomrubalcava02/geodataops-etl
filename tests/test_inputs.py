@@ -126,10 +126,13 @@ def test_csv_rejects_duplicate_key_even_if_value_changes(tmp_path):
         inputs.read_inputs(path, DEMO_GEOJSON)
 
 
-def test_csv_rejects_inconsistent_population_total(tmp_path):
+@pytest.mark.parametrize(
+    "source", [inputs.DEMO_SOURCE, f"{inputs.DEMO_SOURCE} | revisión"], ids=["same-source", "mixed-source"]
+)
+def test_csv_rejects_inconsistent_population_total(tmp_path, source):
     path = write_csv(
         tmp_path / "observations.csv",
-        observation(valor="32"),
+        observation(valor="32", fuente=source),
         observation(indicador="poblacion_femenina", valor="19"),
         observation(indicador="poblacion_masculina", valor="14"),
     )
@@ -219,3 +222,10 @@ def test_geojson_api_retries_and_keeps_query_out_of_provenance(monkeypatch):
 def test_geojson_api_requires_https_without_credentials(url):
     with pytest.raises(inputs.InputError, match="HTTPS"):
         inputs.read_inputs(REAL_CSV, geojson_url=url, dataset="jalisco")
+
+
+def test_geojson_preserves_inegi_coordinate_system():
+    municipalities, _, raw = inputs.read_inputs(REAL_CSV, REAL_GEOJSON, dataset="jalisco")
+    source_crs = {"type": "name", "properties": {"name": "EPSG:6365"}}
+    assert all(item["geometry"]["crs"] == source_crs for item in municipalities)
+    assert all(item["payload"]["geometry"]["crs"] == source_crs for item in raw[-len(municipalities):])

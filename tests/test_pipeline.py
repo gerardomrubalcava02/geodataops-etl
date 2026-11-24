@@ -1,35 +1,13 @@
 import csv
 import json
-import os
-from pathlib import Path
-from uuid import uuid4
 
-import psycopg
 import pytest
-from psycopg import sql
-from psycopg.conninfo import make_conninfo
 
 from geodataops import db
 from geodataops.cli import main
 from geodataops.inputs import CSV_FIELDS, DEMO_SOURCE
 
 pytestmark = pytest.mark.integration
-ROOT = Path(__file__).resolve().parents[1]
-
-
-@pytest.fixture
-def dsn(monkeypatch):
-    server = os.getenv("GEODATAOPS_TEST_DSN")
-    if not server:
-        pytest.skip("Configura GEODATAOPS_TEST_DSN para probar contra PostgreSQL/PostGIS")
-    monkeypatch.chdir(ROOT)
-    name = f"geodataops_test_{uuid4().hex}"
-    with psycopg.connect(server, autocommit=True) as admin:
-        admin.execute(sql.SQL("CREATE DATABASE {} TEMPLATE template0").format(sql.Identifier(name)))
-        try:
-            yield make_conninfo(server, dbname=name)
-        finally:
-            admin.execute(sql.SQL("DROP DATABASE {}").format(sql.Identifier(name)))
 
 
 def _read_export(path):
@@ -45,11 +23,11 @@ def _run_history(dsn, capsys):
     return json.loads(capsys.readouterr().out)
 
 
-def _write_demo_batch(path, rows):
+def _write_demo_batch(path, rows, *, source=DEMO_SOURCE):
     with path.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.writer(stream)
         writer.writerow(CSV_FIELDS)
-        writer.writerows((*row, "personas", DEMO_SOURCE) for row in rows)
+        writer.writerows((*row, "personas", source) for row in rows)
 
 
 def test_default_real_load_and_idempotence(dsn, tmp_path, capsys):
@@ -141,7 +119,10 @@ def test_recovery_after_database_commit_and_csv_failure(dsn, tmp_path, capsys):
     assert history[0]["report"]["csv_published"] is True
 
 
-def test_consistency_across_incremental_batches(dsn, tmp_path, capsys):
+@pytest.mark.parametrize(
+    "source", [DEMO_SOURCE, f"{DEMO_SOURCE} | revisión"], ids=["same-source", "mixed-source"]
+)
+def test_consistency_across_incremental_batches(dsn, tmp_path, capsys, source):
     output = tmp_path / "demo.csv"
     batch = tmp_path / "update.csv"
     command = ["--dsn", dsn, "run", "--dataset", "demo", "--output", str(output)]
@@ -152,17 +133,29 @@ def test_consistency_across_incremental_batches(dsn, tmp_path, capsys):
         if row["cvegeo"] == "14039" and row["periodo"] == "2020"
     }
     total = current["poblacion_total"] + 1
-    _write_demo_batch(batch, [("14039", 2020, "poblacion_total", total)])
+    _write_demo_batch(batch, [("14039", 2020, "poblacion_total", total)], source=source)
     assert main([*command, "--csv", str(batch)]) == 1
     assert _read_export(output) == rows
-    failure = _run_history(dsn, capsys)[0]["error"]
-    assert failure["type"] == "ConsistencyError"
-    assert (failure["cvegeo"], failure["periodo"]) == ("14039", 2020)
+    failure = _run_history(dsn, capsys)[0]
+    assert failure["report"]["db_committed"] is False
+    assert failure["error"]["type"] == "ConsistencyError"
+    assert (failure["error"]["cvegeo"], failure["error"]["periodo"]) == ("14039", 2020)
 
-    _write_demo_batch(batch, [
-        ("14039", 2020, "poblacion_total", total),
-        ("14039", 2020, "poblacion_femenina", current["poblacion_femenina"] + 1),
-    ])
+    female = current["poblacion_femenina"] + 1
+    _write_demo_batch(
+        batch,
+        [("14039", 2020, "poblacion_total", total), ("14039", 2020, "poblacion_femenina", female)],
+        source=source,
+    )
     assert main([*command, "--csv", str(batch)]) == 0
     assert _run_history(dsn, capsys)[0]["report"]["indicators_upserted"] == 2
-    assert len(_read_export(output)) == len(rows)
+    recovered = _read_export(output)
+    assert len(recovered) == len(rows)
+    assert {
+        row["indicador"]: (int(row["valor"]), row["fuente"]) for row in recovered
+        if row["cvegeo"] == "14039" and row["periodo"] == "2020"
+    } == {
+        "poblacion_total": (total, source),
+        "poblacion_femenina": (female, source),
+        "poblacion_masculina": (current["poblacion_masculina"], DEMO_SOURCE),
+    }
